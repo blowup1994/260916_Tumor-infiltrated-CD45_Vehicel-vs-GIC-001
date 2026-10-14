@@ -1,0 +1,1007 @@
+install.packages("BiocManager")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+packages <- c("Seurat", "patchwork", "dplyr", "tidyverse", "gridExtra", "hdf5r")
+BiocManager::install(packages)
+
+rm(list = ls(all.names = TRUE))
+
+{
+  library("Seurat")
+  library("patchwork")
+  library("dplyr")
+  library("tidyverse")
+  library("gridExtra")
+  library("ggpubr")
+  library("hdf5r")
+  library("pheatmap")
+}
+
+
+####### Loading table #######
+d1 <- Read10X_h5("C:/Users/안재희/Desktop/RNAseq/260916_Tumor-infiltrated CD45_Vehicel vs GIC-001/HN00286557_result_10X/Ctrl/filtered_feature_bc_matrix.h5")
+d2 <- Read10X_h5("C:/Users/안재희/Desktop/RNAseq/260916_Tumor-infiltrated CD45_Vehicel vs GIC-001/HN00286557_result_10X/GIC-001/filtered_feature_bc_matrix.h5")
+
+seu1 <- CreateSeuratObject(
+  counts = d1,
+  project = "Vehicle",
+  min.cells = 3,
+  min.features = 200
+)
+
+seu2 <- CreateSeuratObject(
+  counts = d2,
+  project = "GIC-001",
+  min.cells = 3,
+  min.features = 200
+)
+
+seu1$condition <- "Vehicle"
+seu2$condition <- "GIC-001"
+
+merged <- merge(seu1, seu2, add.cell.ids = c("Vehicle", "GIC-001"))
+merged[["percent.mt"]] <- PercentageFeatureSet(merged, pattern = "^MT-")
+merged <- subset(merged, subset = nFeature_RNA > 10 & nFeature_RNA < 6000 & percent.mt <5)
+VlnPlot(merged, features = "nFeature_RNA")
+
+merged <- NormalizeData(merged, normalization.method = "LogNormalize", scale.factor = 10000)
+merged <- FindVariableFeatures(merged, selection.method = "vst", nfeatures = 4000)
+
+merged <- ScaleData(merged, do.center = FALSE)
+merged <- RunPCA(merged)
+merged <- FindNeighbors(object = merged, dims = 1:10)
+merged <- FindClusters(object = merged,
+                       algorithm = 4)
+
+merged <- RunUMAP(merged, dims = 1:10)
+Idents(merged)
+
+merged$condition <- factor(
+  merged$condition,
+  levels = c("Vehicle", "GIC-001")
+)
+
+merged$seurat_clusters <- as.numeric(as.character(merged$seurat_clusters)) - 1
+merged$seurat_clusters <- factor(merged$seurat_clusters)
+Idents(merged) <- "seurat_clusters"
+table(merged$condition)
+VlnPlot(merged, features = "nFeature_RNA",
+        group.by = "condition")  +
+  labs(
+    x = NULL,
+    y = "Number of detected genes",
+    title = NULL
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+
+
+p <- DimPlot(merged,
+             pt.size = 0.5)
+
+
+p <- DimPlot(merged, split.by = "condition",
+             pt.size = 1.1)
+
+p + labs(
+  x = "UMAP1",
+  y = "UMAP2"
+)
+
+
+
+p_all <- DimPlot(
+  merged,
+  reduction = "umap",
+  label = TRUE,
+  pt.size = 0.1,
+) +
+  ggtitle("Grouped") +
+  labs(
+    x = "UMAP1",
+    y = "UMAP2"
+  ) 
+
+p_vehicle <- DimPlot(
+  subset(merged, subset = condition == "Vehicle"),
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  pt.size = 0.5,
+  label = TRUE
+) +
+  ggtitle("Vehicle") +
+  labs(
+    x = "UMAP1",
+    y = "UMAP2"
+  )
+
+# GIC-001
+p_gic <- DimPlot(
+  subset(merged, subset = condition == "GIC-001"),
+  reduction = "umap",
+  group.by = "seurat_clusters",
+  pt.size = 0.5,
+  label = TRUE
+) +
+  ggtitle("GIC-001") +
+  labs(
+    x = "UMAP1",
+    y = "UMAP2"
+  )
+
+wrap_plots(
+  c(list(p_all), p_vehicle, p_gic),
+  ncol = 3,
+  guides = "collect"
+) +
+  labs(
+    x = "UMAP1",
+    y = "UMAP2"
+  ) &
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+####### Cluster proportion #######
+
+df_bar <- merged@meta.data %>%
+  count(condition, seurat_clusters) %>%
+  group_by(condition) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+ggplot(df_bar, aes(x = condition, y = prop, fill = factor(seurat_clusters))) +
+  geom_bar(
+    stat = "identity",
+    width = 0.75,
+    color = "black",
+    linewidth = 0.2
+  ) +
+  theme_classic() +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  labs(
+    title = "Distribution of Clusters by Condition",
+    x = NULL,
+    y = "Proportion of Cells (%)",
+    fill = "Cluster"
+  ) +
+  theme(
+    text = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    plot.title = element_text(size = 18),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13)
+  )
+
+
+
+############## Identifying cluster #############
+Layers(merged[["RNA"]])
+
+merged <- JoinLayers(
+  merged,
+  assay = "RNA"
+)
+
+Idents(merged) <- "seurat_clusters" # FindAllMarkers analyzes the units defined by the active identity class (Ident)
+table(Idents(merged))
+
+
+all_markers <- FindAllMarkers(merged, only.pos = TRUE)
+all_markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1)
+
+
+all_markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top10
+DoHeatmap(merged, features = top10$gene) + NoLegend()
+
+
+
+
+
+########## Labeling #########
+
+markers_major <- c(
+  # T
+  "Cd3d", "Cd3e", "Trac", "Cd4", "Cd8a", "Cd8b1",
+  
+  # NK
+  "Ncr1", "Klrb1c", "Nkg7",
+  
+  # B
+  "Cd79a", "Ms4a1", "Cd74", "Cd37",
+  
+  # Monocyte
+  "Lyz2", "Ly6c2", "Ccr2", "Plac8", "Fcgr3",
+  
+  # Macrophage
+  "Adgre1", "Csf1r", "Fcgr1", "Cd86",
+  "Cd68", "C1qa", "C1qb", "C1qc", "Apoe",
+  
+  # cDC1
+  "Xcr1", "Clec9a", "Cd24a", "Batf3", "Irf8",
+  
+  # cDC2
+  "Sirpa", "Cd209a", "Clec10a", "Itgam",
+  
+  # pDC
+  "Siglech", "Bst2", "Tcf4", "Gzmb",
+  
+  # Neutrophil
+  "S100a8", "S100a9", "Ly6g", "Csf3r",
+  
+  # Mast
+  "Kit", "Cpa3", "Mcpt4", "Tpsb2",
+  
+  # Cycling
+  "Mki67", "Top2a", "Stmn1", "Tubb5"
+)
+
+
+
+p <- DotPlot(
+  merged,
+  features = markers_major,
+  dot.scale = 10,
+  scale = FALSE
+)
+
+# 2. 각 gene별로 cluster 간 expression scaling
+plot_data <- p$data %>%
+  group_by(features.plot) %>%
+  mutate(
+    gene_scaled = as.numeric(scale(avg.exp))
+  ) %>%
+  ungroup()
+
+
+# 3. plot
+ggplot(
+  plot_data,
+  aes(
+    x = features.plot,
+    y = id,
+    size = pct.exp,
+    fill = gene_scaled
+  )
+) +
+  geom_point(
+    shape = 21,
+    colour = "black",
+    stroke = 0.8
+  ) +
+  scale_fill_gradient2(
+    low = "#1f78b4",
+    mid = "white",
+    high = "#e31a1c",
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    oob = scales::squish,
+    name = "Expression\nZ-score"
+  ) +
+  scale_size(
+    range = c(1, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank()
+  ) +
+  scale_size(
+    range = c(3, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  )
+
+new.cluster.ids <- c(
+  "Monocyte",    # 0
+  "Mono-Mac",             # 1
+  "Macrophage",           # 2
+  "Macrophage",   # 3
+  "Monocyte",             # 4
+  "Macrophage",           # 5
+  "Macrophage",           # 6
+  "Macrophage",           # 7
+  "Monocyte",    # 8
+  "Mast cell",      # 9
+  "Macrophage",           # 10
+  "NK",                   # 11
+  "Neutrophil",           # 12
+  "T cell",               # 13
+  "DC/B cell-like",          # 14  <- 일단 보류성 annotation
+  "Mo/Neu-like"  # 15
+)
+
+
+obj1 <- merged
+DimPlot(obj1)
+names(new.cluster.ids) <- levels(obj1)
+obj1 <- RenameIdents(obj1, new.cluster.ids)
+obj1$seurat_clusters
+
+obj1$celltype <- Idents(obj1)
+
+obj1$celltype <- factor(
+  obj1$celltype,
+  levels = c(
+    "Monocyte",
+    "Mono-Mac",
+    "Macrophage",
+    "Mast cell",
+    "NK",
+    "Neutrophil",
+    "T cell",
+    "DC/B cell-like",
+    "Mo/Neu-like")
+  )
+
+
+Idents(obj1) <- "celltype"
+
+DimPlot(obj1,
+        label = TRUE)
+
+
+DimPlot(obj1,
+        split.by = "condition",
+        pt.size = 0.2,
+        label = TRUE) +
+  labs(x = "UMAP1",
+       y = "UMAP2")
+
+############ Dimplot ##########
+
+DimPlot(
+  obj1,
+  cols = c(
+    "#80B918",  # Monocyte - dark green
+    "#B2DF8A",  # Mono-Mac - light green
+    "#FB6A4A",  # Macrophage - red
+    "#33A02C",  # Mast cell - light purple
+    "#1F78B4",  # NK - blue
+    "#FFD700",  # Neutrophil - gold
+    "#00BFC4",  # T cell - turquoise
+    "#CAB2D6",  # DC/B-cell-like - pink
+    "#7F7F7F"   # Mo/Neu-like - grey
+  ),
+  label = TRUE,
+  label.size = 5,
+  label.color = "black",
+  pt.size = 0.1,
+) +
+  labs(x = "UMAP1",
+       y = "UMAP2") +
+  theme(
+    strip.text = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 16),   # cluster 이름 크기
+    legend.title = element_text(size = 16),  # "celltype" 제목 크기
+    legend.key.height = unit(0.7, "cm"),
+    legend.spacing.y = unit(0.6, "cm"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12)
+  )
+
+
+DimPlot(
+  obj1,
+  cols = c(
+    "#80B918",  # Monocyte - dark green
+    "#B2DF8A",  # Mono-Mac - light green
+    "#FB6A4A",  # Macrophage - red
+    "#33A02C",  # Mast cell - light purple
+    "#1F78B4",  # NK - blue
+    "#FFD700",  # Neutrophil - gold
+    "#00BFC4",  # T cell - turquoise
+    "#CAB2D6",  # DC/B-cell-like - pink
+    "#7F7F7F"   # Mo/Neu-like - grey
+  ),
+  label = TRUE,
+  label.size = 5,
+  label.color = "black",
+  pt.size = 0.1,
+) +
+  labs(x = "UMAP1",
+       y = "UMAP2") +
+  theme(
+    strip.text = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 16),   # cluster 이름 크기
+    legend.title = element_text(size = 16),  # "celltype" 제목 크기
+    legend.key.height = unit(0.7, "cm"),
+    legend.spacing.y = unit(0.6, "cm"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12)
+  )
+
+
+DimPlot(
+  obj1,
+  split.by = "condition",
+  cols = c(
+    "#80B918",  # Monocyte - dark green
+    "#B2DF8A",  # Mono-Mac - light green
+    "#FB6A4A",  # Macrophage - red
+    "#33A02C",  # Mast cell - light purple
+    "#1F78B4",  # NK - blue
+    "#FFD700",  # Neutrophil - gold
+    "#00BFC4",  # T cell - turquoise
+    "#CAB2D6",  # DC/B-cell-like - pink
+    "#7F7F7F"   # Mo/Neu-like - grey
+  ),
+  label.size = 5,
+  label.color = "black",
+  pt.size = 0.1,
+) +
+  labs(x = "UMAP1",
+       y = "UMAP2") +
+  theme(
+    strip.text = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 16),   # cluster 이름 크기
+    legend.title = element_text(size = 16),  # "celltype" 제목 크기
+    legend.key.height = unit(0.7, "cm"),
+    legend.spacing.y = unit(0.6, "cm"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12)
+  )
+
+
+
+####### Labeled cluster proportion #######
+
+celltype_cols <- c(
+  "#80B918",  # Monocyte - dark green
+  "#B2DF8A",  # Mono-Mac - light green
+  "#FB6A4A",  # Macrophage - red
+  "#33A02C",  # Mast cell - light purple
+  "#1F78B4",  # NK - blue
+  "#FFD700",  # Neutrophil - gold
+  "#00BFC4",  # T cell - turquoise
+  "#CAB2D6",  # DC/B-cell-like - pink
+  "#7F7F7F"   # Mo/Neu-like - grey
+)
+
+df_bar <- obj1@meta.data %>%
+  count(condition, celltype) %>%
+  group_by(condition) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+ggplot(
+  df_bar,
+  aes(
+    x = condition,
+    y = prop,
+    fill = celltype
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    width = 0.75,
+    color = "black",
+    linewidth = 0.2
+  ) +
+  scale_fill_manual(
+    values = celltype_cols
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  theme_classic() +
+  labs(
+    title = "Distribution of Cell Types by Group",
+    x = NULL,
+    y = "Proportion of Cells (%)",
+    fill = "Cell type"
+  ) +
+  theme(
+    text = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    plot.title = element_text(size = 18),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13)
+  )
+
+
+########## Marker checking ##########
+
+markers_major <- c(
+  # T
+  "Cd3d", "Cd3e", "Trac", "Cd4", "Cd8a", "Cd8b1",
+  
+  # NK
+  "Ncr1", "Klrb1c", "Nkg7",
+  
+  # B
+  "Cd79a", "Ms4a1", "Cd74", "Cd37",
+  
+  # Monocyte
+  "Lyz2", "Ly6c2", "Ccr2", "Plac8", "Fcgr3",
+  
+  # Macrophage
+  "Adgre1", "Csf1r", "Fcgr1", "Cd80",
+  "Cd68", "C1qa", "Apoe",
+  
+  # cDC1
+  "Xcr1", "Cd24a", "Batf3", "Irf8", "Cd209a", "Clec10a",
+  
+  
+  # Neutrophil
+  "S100a8", "S100a9", "Ly6g", "Csf3r",
+  
+  # Mast
+  "Kit", "Cpa3", "Mcpt4", "Tpsb2"
+)
+
+p <- DotPlot(
+  obj1,
+  features = markers_major,
+  dot.scale = 10,
+  scale = FALSE
+)
+
+# 2. 각 gene별로 cluster 간 expression scaling
+plot_data <- p$data %>%
+  group_by(features.plot) %>%
+  mutate(
+    gene_scaled = as.numeric(scale(avg.exp))
+  ) %>%
+  ungroup()
+
+
+# 3. plot
+ggplot(
+  plot_data,
+  aes(
+    x = features.plot,
+    y = id,
+    size = pct.exp,
+    fill = gene_scaled
+  )
+) +
+  geom_point(
+    shape = 21,
+    colour = "black",
+    stroke = 0.8
+  ) +
+  scale_fill_gradient2(
+    low = "#1f78b4",
+    mid = "white",
+    high = "#e31a1c",
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    oob = scales::squish,
+    name = "Expression\nZ-score"
+  ) +
+  scale_size(
+    range = c(1, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank()
+  ) +
+  scale_size(
+    range = c(3, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  )
+
+
+######### Marker Feature plot ##########
+
+marker_feature <- c("Ccr2", "Lyz2", "C1qa", 
+                    "Cd3e", "Ncr1", "Cd79a", "Cd209a", "S100a8")
+
+
+FeaturePlot(
+  obj1,
+  features = unname(marker_feature),
+  cols = c(
+    "grey95",
+    "royalblue"),
+  pt.size = 0.01,
+  order = TRUE,
+  min.cutoff = "q30",
+  max.cutoff = "q95",
+  keep.scale = "feature",
+  ncol = 4
+)
+
+
+
+######## T cell analysis ########
+
+Tcell <- subset(obj1,
+                idents = "T cell")
+
+
+Tcell <- ScaleData(Tcell, do.center = FALSE)
+Tcell <- RunPCA(Tcell)
+Tcell <- FindNeighbors(object = Tcell, dims = 1:8)
+Tcell <- FindClusters(object = Tcell,
+                       algorithm = 4)
+
+Tcell <- RunUMAP(Tcell, dims = 1:8)
+
+
+DimPlot(Tcell,
+        pt.size = 1.3,
+        split.by = "condition")
+
+VlnPlot(Tcell,
+        features = c("Cd3e", "Cd4", "Cd8a", "Cd1d", "Trdc"),
+        ncol = 4,
+        add.noise = FALSE)
+
+FeaturePlot(Tcell,
+        features = c("Cd3e", "Cd4", "Cd8a"),
+        pt.size = 1.2,
+        ncol = 3)
+
+
+DotPlot(Tcell,
+        features = c("Cd3e", "Cd4", "Cd8a"))
+
+Tcell_comparison <- FindAllMarkers(Tcell,
+                                   test.use = "wilcox")
+
+
+
+markers_major <- c(
+  "Cd3e", "Cd4", "Cd8a",
+  "Cd44", "Sell", "Tcf7", "Slamf6", "Il7r", "Lag3", "Havcr2", "Pdcd1", "Foxp3","Mki67", "Top2a", ""
+  
+)
+
+
+
+p <- DotPlot(
+  Tcell,
+  features = markers_major,
+  dot.scale = 10,
+  scale = FALSE
+)
+
+# 2. 각 gene별로 cluster 간 expression scaling
+plot_data <- p$data %>%
+  group_by(features.plot) %>%
+  mutate(
+    gene_scaled = as.numeric(scale(avg.exp))
+  ) %>%
+  ungroup()
+
+
+# 3. plot
+ggplot(
+  plot_data,
+  aes(
+    x = features.plot,
+    y = id,
+    size = pct.exp,
+    fill = gene_scaled
+  )
+) +
+  geom_point(
+    shape = 21,
+    colour = "black",
+    stroke = 0.8
+  ) +
+  scale_fill_gradient2(
+    low = "#1f78b4",
+    mid = "white",
+    high = "#e31a1c",
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    oob = scales::squish,
+    name = "Expression\nZ-score"
+  ) +
+  scale_size(
+    range = c(1, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank()
+  ) +
+  scale_size(
+    range = c(3, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  )
+
+
+
+########### Macrophage subset ############
+
+
+Mac <- subset(obj1,
+                idents = "Macrophage")
+
+
+Mac <- ScaleData(Mac, do.center = FALSE)
+Mac <- RunPCA(Mac)
+Mac <- FindNeighbors(object = Mac, dims = 1:10)
+Mac <- FindClusters(object = Mac,
+                      algorithm = 4)
+
+Mac <- RunUMAP(Mac, dims = 1:10)
+
+
+DimPlot(Mac,
+        pt.size = 0.5,
+        label = TRUE)
+
+FeaturePlot(Mac,
+            features = c("Cd3e", "Cd4", "Cd8a"),
+            pt.size = 1.2,
+            ncol = 3)
+
+
+DotPlot(Mac,
+        features = c("Cd3e", "Cd4", "Cd8a"))
+
+
+markers_major <- c( "Nos2",
+                    "Il1b",
+                    "Tnf",
+                    "Cd80",
+                    "Cd86",
+                    "Cxcl9",
+                    "Cxcl10",
+                    "Stat1",
+                    "Irf1",
+                    "H2-Ab1",
+                    "H2-Aa",
+                    "Tap1",
+                    "Arg1",
+                    "Mrc1",
+                    "Il10",
+                    "Tgfb1",
+                    "Trem2",
+                    "Spp1",
+                    "Lgals3",
+                    "Apoe","Mki67", "Top2a"
+  )
+
+
+
+
+p <- DotPlot(
+  Mac,
+  features = markers_major,
+  dot.scale = 10,
+  scale = FALSE
+)
+
+# 2. 각 gene별로 cluster 간 expression scaling
+plot_data <- p$data %>%
+  group_by(features.plot) %>%
+  mutate(
+    gene_scaled = as.numeric(scale(avg.exp))
+  ) %>%
+  ungroup()
+
+
+# 3. plot
+ggplot(
+  plot_data,
+  aes(
+    x = features.plot,
+    y = id,
+    size = pct.exp,
+    fill = gene_scaled
+  )
+) +
+  geom_point(
+    shape = 21,
+    colour = "black",
+    stroke = 0.8
+  ) +
+  scale_fill_gradient2(
+    low = "#1f78b4",
+    mid = "white",
+    high = "#e31a1c",
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    oob = scales::squish,
+    name = "Expression\nZ-score"
+  ) +
+  scale_size(
+    range = c(1, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 16
+    ),
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank()
+  ) +
+  scale_size(
+    range = c(3, 9),
+    limits = c(0, 100),
+    name = "Percent\nExpressed"
+  )
+
+
+####### Macrophage clustering #######
+
+new.cluster.ids <- c(
+  "MHC-II Mac",              # 1
+  "Activated Mac",           # 2
+  "Proliferating",             # 3
+  "Transitional Mac",        # 4
+  "Inflammatory/Suppressive Mac",         # 5
+  "Inflammatory/Suppressive Mac",         # 6
+  "Suppressive Mac",         # 7
+  "MHC-II Mac",           # 8
+  "Activated Mac",           # 9
+  "Transitional Mac",        # 10
+  "MHC-II Mac",              # 11
+  "Proliferating",             # 12
+  "Proliferating"              # 13
+)
+
+names(new.cluster.ids) <- levels(Mac)
+Mac <- RenameIdents(Mac, new.cluster.ids)
+Mac$seurat_clusters
+
+Mac$celltype <- Idents(Mac)
+
+Mac$celltype <- factor(
+  Mac$celltype,
+  levels = c(
+    "MHC-II Mac",
+    "Activated Mac",
+    "Proliferating",
+    "Transitional Mac",
+    "Inflammatory/Suppressive Mac",
+    "Suppressive Mac"
+  )
+)
+
+
+Idents(obj1) <- "celltype"
+
+DimPlot(Mac,
+        label = TRUE)
+
+
+DimPlot(Mac,
+        split.by = "condition",
+        pt.size = 1.2) +
+  labs(x = "UMAP1",
+       y = "UMAP2")
+
+
+cluster_colors <- c(
+  "MHC-II Mac"            = "#80D8FF",
+  "Activated Mac"         = "#FF8A80",
+  "Proliferating"         = "#B39DDB",
+  "Transitional Mac"      = "#A5D6A7",
+  "Inflammatory/Suppressive Mac" = "#FFB74D",
+  "Suppressive Mac"       = "#F48FB1"
+)
+
+
+DimPlot(
+  Mac,
+  label = TRUE,
+  cols = c(cluster_colors),
+  label.size = 5,
+  label.color = "black",
+  pt.size = 0.4,
+) +
+  labs(x = "UMAP1",
+       y = "UMAP2") +
+  theme(
+    strip.text = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 16),   # cluster 이름 크기
+    legend.title = element_text(size = 16),  # "celltype" 제목 크기
+    legend.key.height = unit(0.7, "cm"),
+    legend.spacing.y = unit(0.6, "cm"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12)
+  )
+
+
+
+DimPlot(
+  Mac,
+  split.by = "condition",
+  cols = c(cluster_colors),
+  label.size = 5,
+  label.color = "black",
+  pt.size = 0.4,
+) +
+  labs(x = "UMAP1",
+       y = "UMAP2") +
+  theme(
+    strip.text = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 16),   # cluster 이름 크기
+    legend.title = element_text(size = 16),  # "celltype" 제목 크기
+    legend.key.height = unit(0.7, "cm"),
+    legend.spacing.y = unit(0.6, "cm"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 12)
+  )
+
+
+df_bar <- Mac@meta.data %>%
+  count(condition, celltype) %>%
+  group_by(condition) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+ggplot(
+  df_bar,
+  aes(
+    x = condition,
+    y = prop,
+    fill = celltype
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    width = 0.75,
+    color = "black",
+    linewidth = 0.2
+  ) +
+  scale_fill_manual(
+    values = cluster_colors
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  theme_classic() +
+  labs(
+    title = "Distribution of Cell Types by Group",
+    x = NULL,
+    y = "Proportion of Cells (%)",
+    fill = "Cell type"
+  ) +
+  theme(
+    text = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    plot.title = element_text(size = 18),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13)
+  )
+
+
